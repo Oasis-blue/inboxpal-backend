@@ -14,13 +14,11 @@ let waStatus = {
   errorDetails: null
 };
 
-let sock = null;
-
 async function connectToWhatsApp() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
 
-    sock = makeWASocket({
+    const sock = makeWASocket({
       auth: state,
       printQRInTerminal: false,
       browser: Browsers.macOS('Desktop'),
@@ -42,22 +40,20 @@ async function connectToWhatsApp() {
       } else if (connection === 'close') {
         const statusCode = (lastDisconnect?.error)?.output?.statusCode;
         const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-        
-        console.log(`❌ Connection closed. Status code: ${statusCode || 'Unknown'}`);
 
         if (isLoggedOut) {
           waStatus = {
             state: 'logged_out',
             lastUpdated: new Date().toISOString(),
-            errorDetails: 'WhatsApp session logged out. Re-pairing or QR scan required.'
+            errorDetails: 'WhatsApp session logged out.'
           };
         } else {
           waStatus = {
-            state: 'error',
+            state: 'connecting',
             lastUpdated: new Date().toISOString(),
-            errorDetails: `Connection timed out or closed (Code: ${statusCode || 408}). Retrying...`
+            errorDetails: null
           };
-          setTimeout(connectToWhatsApp, 5000);
+          setTimeout(connectToWhatsApp, 3000);
         }
       }
     });
@@ -101,12 +97,7 @@ async function connectToWhatsApp() {
       }
     });
   } catch (err) {
-    console.error('Initialization Error:', err);
-    waStatus = {
-      state: 'error',
-      lastUpdated: new Date().toISOString(),
-      errorDetails: 'Connection init error. Retrying in 5s...'
-    };
+    waStatus = { state: 'connecting', lastUpdated: new Date().toISOString(), errorDetails: null };
     setTimeout(connectToWhatsApp, 5000);
   }
 }
@@ -117,4 +108,4 @@ app.get('/api/messages', (req, res) => res.json({ success: true, data: inboxFeed
 app.get('/api/status', (req, res) => res.json({ success: true, status: waStatus }));
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 InboxPal Server live on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server live on port ${PORT}`));
