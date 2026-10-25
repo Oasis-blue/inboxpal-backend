@@ -1,9 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
-const fs = require('fs');
-const path = require('path');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 
 const app = express();
 app.use(cors());
@@ -11,18 +9,14 @@ app.use(express.json());
 
 let inboxFeed = [];
 let pairingCode = null;
-
-const AUTH_DIR = './auth_info_baileys';
+let pairingRequested = false;
 
 async function connectToWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
 
   const sock = makeWASocket({
     auth: state,
-    printQRInTerminal: false,
-    // Fix 1: Explicitly specify Desktop browser metadata so WhatsApp accepts the pairing code
-    browser: Browsers.ubuntu('Chrome'),
-    markOnlineOnConnect: false
+    printQRInTerminal: false
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -30,19 +24,20 @@ async function connectToWhatsApp() {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // Trigger pairing code if not registered yet
-    if (qr && !sock.authState.creds.registered && !pairingCode) {
-      const targetPhoneNumber = process.env.PHONE_NUMBER;
+    // OFFICIAL BAILEYS PATTERN: Use the 'qr' event trigger to request pairing code once
+    if (qr && !sock.authState.creds.registered && !pairingRequested) {
+      pairingRequested = true;
+      const targetPhoneNumber = process.env.PHONE_NUMBER; // E.g. 2348012345678 (digits only, no +)
+      
       if (targetPhoneNumber) {
         try {
-          // Add a short 3-second delay to ensure socket is ready
-          await new Promise(res => setTimeout(res, 3000));
-          pairingCode = await sock.requestPairingCode(targetPhoneNumber);
+          pairingCode = await sock.requestPairingCode(targetPhoneNumber.replace(/[^0-9]/g, ''));
           console.log(`=================================`);
           console.log(`YOUR WHATSAPP PAIRING CODE: ${pairingCode}`);
           console.log(`=================================`);
         } catch (err) {
           console.error('Error generating pairing code:', err);
+          pairingRequested = false;
         }
       }
     }
@@ -52,20 +47,15 @@ async function connectToWhatsApp() {
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       
       console.log(`⚠️ Connection closed (code ${statusCode}). Reconnecting: ${shouldReconnect}`);
+      pairingRequested = false;
 
       if (shouldReconnect) {
-        setTimeout(connectToWhatsApp, 2000);
-      } else {
-        console.log('❌ Logged out. Clearing session files...');
-        if (fs.existsSync(AUTH_DIR)) {
-          fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-        }
-        pairingCode = null;
-        setTimeout(connectToWhatsApp, 2000);
+        setTimeout(connectToWhatsApp, 3000);
       }
     } else if (connection === 'open') {
       console.log('✅ WhatsApp connected successfully!');
       pairingCode = null;
+      pairingRequested = false;
     }
   });
 
@@ -94,7 +84,6 @@ async function connectToWhatsApp() {
 
 connectToWhatsApp();
 
-// REST APIs
 app.get('/api/messages', (req, res) => {
   res.json({ success: true, data: inboxFeed });
 });
