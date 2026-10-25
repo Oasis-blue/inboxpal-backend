@@ -53,7 +53,6 @@ async function connectToWhatsApp() {
               chatType = 'channel';
             }
 
-            // Convert WhatsApp message timestamp (seconds) to ISO string
             const msgTimestamp = msg.messageTimestamp 
               ? new Date(Number(msg.messageTimestamp) * 1000).toISOString() 
               : new Date().toISOString();
