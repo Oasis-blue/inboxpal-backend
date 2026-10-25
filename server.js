@@ -1,8 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const makeWASocket = require('@whiskeysockets/baileys').default;
-const { useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 
 const app = express();
 app.use(cors());
@@ -22,20 +21,36 @@ async function connectToWhatsApp() {
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', async (update) => {
-    const { connection, qr } = update;
+    const { connection, lastDisconnect, qr } = update;
 
     // Trigger pairing code if not registered yet
-    if (qr && !sock.authState.creds.registered) {
-      const targetPhoneNumber = process.env.PHONE_NUMBER; // e.g. 2348012345678 (no + or spaces)
+    if (qr && !sock.authState.creds.registered && !pairingCode) {
+      const targetPhoneNumber = process.env.PHONE_NUMBER;
       if (targetPhoneNumber) {
-        pairingCode = await sock.requestPairingCode(targetPhoneNumber);
-        console.log(`=================================`);
-        console.log(`YOUR WHATSAPP PAIRING CODE: ${pairingCode}`);
-        console.log(`=================================`);
+        try {
+          pairingCode = await sock.requestPairingCode(targetPhoneNumber);
+          console.log(`=================================`);
+          console.log(`YOUR WHATSAPP PAIRING CODE: ${pairingCode}`);
+          console.log(`=================================`);
+        } catch (err) {
+          console.error('Error generating pairing code:', err);
+        }
       }
     }
 
-    if (connection === 'open') {
+    if (connection === 'close') {
+      const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      
+      console.log(`⚠️ Connection closed (reason code ${statusCode}). Reconnecting: ${shouldReconnect}`);
+
+      if (shouldReconnect) {
+        // Automatically reconnect on code 515 / restart required
+        setTimeout(connectToWhatsApp, 3000);
+      } else {
+        console.log('❌ Device logged out. Please clear auth_info_baileys folder and restart.');
+      }
+    } else if (connection === 'open') {
       console.log('✅ WhatsApp connected successfully!');
       pairingCode = null;
     }
