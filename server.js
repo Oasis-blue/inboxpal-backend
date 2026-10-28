@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const qrcode = require('qrcode-terminal');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 
 const app = express();
@@ -20,17 +21,22 @@ async function connectToWhatsApp() {
 
     const sock = makeWASocket({
       auth: state,
-      printQRInTerminal: false,
       browser: Browsers.macOS('Desktop'),
       syncFullHistory: false,
       connectTimeoutMs: 60000,
-      keepAliveIntervalMs: 25000
+      keepAliveIntervalMs: 25000,
+      shouldIgnoreJid: (jid) => jid.endsWith('@broadcast')
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect } = update;
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        console.log('📱 Scan this QR code with WhatsApp:');
+        qrcode.generate(qr, { small: true });
+      }
 
       if (connection === 'connecting') {
         waStatus = { state: 'connecting', lastUpdated: new Date().toISOString(), errorDetails: null };
@@ -39,20 +45,17 @@ async function connectToWhatsApp() {
         waStatus = { state: 'connected', lastUpdated: new Date().toISOString(), errorDetails: null };
       } else if (connection === 'close') {
         const statusCode = (lastDisconnect?.error)?.output?.statusCode;
-        const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+        console.log(`⚠️ Connection closed. Status code: ${statusCode}`);
 
-        if (isLoggedOut) {
+        if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+          console.log('🔴 Logged out by WhatsApp.');
           waStatus = {
             state: 'logged_out',
             lastUpdated: new Date().toISOString(),
-            errorDetails: 'WhatsApp session logged out.'
+            errorDetails: 'Session disconnected by WhatsApp.'
           };
         } else {
-          waStatus = {
-            state: 'connecting',
-            lastUpdated: new Date().toISOString(),
-            errorDetails: null
-          };
+          waStatus = { state: 'connecting', lastUpdated: new Date().toISOString(), errorDetails: null };
           setTimeout(connectToWhatsApp, 3000);
         }
       }
@@ -61,17 +64,26 @@ async function connectToWhatsApp() {
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type === 'notify') {
         for (const msg of messages) {
-          if (!msg.key.fromMe && msg.message) {
-            const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
+          try {
+            if (!msg.key || msg.key.fromMe || !msg.message) continue;
+
             const remoteJid = msg.key.remoteJid || '';
-            
-            const isGroup = remoteJid.endsWith('@g.us');
-            const isChannel = remoteJid.endsWith('@newsletter');
-            
+            if (remoteJid.endsWith('@broadcast')) continue;
+
+            // Extract message body across different WhatsApp format structures
+            const text = 
+              msg.message.conversation || 
+              msg.message.extendedTextMessage?.text || 
+              msg.message.imageMessage?.caption || 
+              msg.message.videoMessage?.caption || 
+              '';
+
             if (text) {
-              let senderName = msg.pushName || 'Unknown';
+              const isGroup = remoteJid.endsWith('@g.us');
+              const isChannel = remoteJid.endsWith('@newsletter');
+              let senderName = msg.pushName || 'WhatsApp User';
               let chatType = 'dm';
-              
+
               if (isGroup) chatType = 'group';
               else if (isChannel) chatType = 'channel';
 
@@ -88,10 +100,15 @@ async function connectToWhatsApp() {
                 snippet: text,
                 requiresAction: text.includes('?') || text.toLowerCase().includes('urgent')
               };
-              
-              inboxFeed.unshift(newItem);
-              console.log(`📩 New WhatsApp (${chatType}):`, newItem.snippet);
+
+              // Avoid duplicate logs if the message ID already exists
+              if (!inboxFeed.some(i => i.id === newItem.id)) {
+                inboxFeed.unshift(newItem);
+                console.log(`📩 New WhatsApp (${chatType}) from ${senderName}: "${newItem.snippet}"`);
+              }
             }
+          } catch (mErr) {
+            console.error('Error parsing single message:', mErr.message);
           }
         }
       }
